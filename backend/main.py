@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker, relationship
 from typing import List, Optional, Dict
 from datetime import datetime
 
+
 # ===================
 # Database setup
 # ===================
@@ -16,6 +17,7 @@ DATABASE_URL = "sqlite:///./optimize_ai.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 # ===================
 # SQLAlchemy models
@@ -29,6 +31,10 @@ class User(Base):
     plan = Column(String, default="free")  # free, premium, agency
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+User.workspaces = relationship("Workspace", back_populates="user")
+
+
 class Workspace(Base):
     __tablename__ = "workspaces"
 
@@ -38,7 +44,6 @@ class Workspace(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
     user = relationship("User", back_populates="workspaces")
 
-User.workspaces = relationship("Workspace", back_populates="user")
 
 class Brand(Base):
     __tablename__ = "brands"
@@ -51,7 +56,14 @@ class Brand(Base):
     workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     workspace = relationship("Workspace", back_populates="brands")
 
+
+Brand.competitors = relationship("Competitor", back_populates="brand")
+Brand.runs = relationship("VisibilityRun", back_populates="brand")
+Brand.checklist_items = relationship("ChecklistItem", back_populates="brand")
+
+
 Workspace.brands = relationship("Brand", back_populates="workspace")
+
 
 class Competitor(Base):
     __tablename__ = "competitors"
@@ -62,7 +74,6 @@ class Competitor(Base):
     brand_id = Column(Integer, ForeignKey("brands.id"))
     brand = relationship("Brand", back_populates="competitors")
 
-Brand.competitors = relationship("Competitor", back_populates="brand")
 
 class VisibilityRun(Base):
     __tablename__ = "visibility_runs"
@@ -74,7 +85,9 @@ class VisibilityRun(Base):
     status = Column(String, default="completed")  # pending, completed, failed
     score = Column(Float)  # 0–100
 
-Brand.runs = relationship("VisibilityRun", back_populates="brand")
+
+VisibilityRun.mention_results = relationship("MentionResult", back_populates="run")
+
 
 class MentionResult(Base):
     __tablename__ = "mention_results"
@@ -87,7 +100,6 @@ class MentionResult(Base):
     position = Column(Integer)  # 1st, 2nd, 3rd, ...
     raw_response = Column(String)
 
-VisibilityRun.mention_results = relationship("MentionResult", back_populates="run")
 
 class ChecklistItem(Base):
     __tablename__ = "checklist_items"
@@ -101,9 +113,9 @@ class ChecklistItem(Base):
     status = Column(String, default="todo")  # todo, done
     created_at = Column(DateTime, default=datetime.utcnow)
 
-Brand.checklist_items = relationship("ChecklistItem", back_populates="brand")
 
 Base.metadata.create_all(bind=engine)
+
 
 # ===================
 # Pydantic models (API DTOs)
@@ -111,24 +123,33 @@ Base.metadata.create_all(bind=engine)
 class UserBase(BaseModel):
     email: str
 
+
+class WorkspaceCreate(BaseModel):
+    name: str
+
+
 class BrandCreate(BaseModel):
     name: str
     url: str
     category: str
     location: Optional[str] = None
 
+
 class CompetitorCreate(BaseModel):
     name: str
     url: str
 
+
 class RunCreate(BaseModel):
     brand_id: int
+
 
 class DashboardResponse(BaseModel):
     score: float
     trend: List[Dict[str, float]]
     mentions_by_prompt: Dict[str, int]
     checklist: List[Dict]
+
 
 # ===================
 # Helpers: mock LLM + scoring
@@ -150,11 +171,9 @@ def run_visibility_check(db, brand, competitors):
     total_queries = 0
     total_mentions = 0
     positions = []
-
     query_categories = set()
 
     for i, prompt in enumerate(prompts):
-        # Simple mock: sometimes mention brand, sometimes not, and sometimes mention competitors
         total_queries += 1
         query_categories.add(prompt.split()[0].lower())  # crude “query category”
 
@@ -185,9 +204,7 @@ def run_visibility_check(db, brand, competitors):
     # Compute score
     mention_rate = total_mentions / total_queries if total_queries > 0 else 0
     avg_pos = sum(positions) / len(positions) if positions else 10
-    # invert position: 1st = 1.0; 5th = 0.2
     pos_weight = max(0, 1 - (avg_pos - 1) / 4)
-
     coverage = len(query_categories) / 5  # assume 5 query types
 
     score = (
@@ -199,7 +216,7 @@ def run_visibility_check(db, brand, competitors):
     run.score = max(0, min(100, score))
     run.status = "completed"
 
-    # Generate a simple checklist (no LLM in this minimal version)
+    # Generate a simple checklist
     checklist = [
         ChecklistItem(
             brand_id=brand.id,
@@ -234,10 +251,12 @@ def run_visibility_check(db, brand, competitors):
     db.refresh(run)
     return run
 
+
 # ===================
 # FastAPI app
 # ===================
 app = FastAPI(title="optimize.ai - AI Visibility Score API")
+
 
 def get_db():
     db = SessionLocal()
@@ -246,88 +265,145 @@ def get_db():
     finally:
         db.close()
 
+
 # You would add real auth later (Firebase / Google OAuth / JWT).
 # For now, this is a fake user.
 mock_user = User(email="test@example.com", role="user", plan="free")
+
 
 @app.post("/auth/register", response_model=UserBase)
 async def register():
     return mock_user
 
+
 @app.post("/auth/login", response_model=UserBase)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     return mock_user
 
+
 @app.post("/workspaces")
-async def create_workspace(name: str, db=Depends(get_db)):
-    workspace = Workspace(name=name, user_id=1)
+async def create_workspace(ws: WorkspaceCreate, db=Depends(get_db)):
+    workspace = Workspace(name=ws.name, user_id=1)
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
     return workspace
 
+
 @app.post("/brands")
 async def create_brand(brand_data: BrandCreate, db=Depends(get_db)):
+    print("create_brand called")
+    print("brand_data:", brand_data)
+
     brand = Brand(**brand_data.dict())
     brand.workspace_id = 1  # hardcode for now
     db.add(brand)
     db.commit()
     db.refresh(brand)
-    return brand
+
+    print("Created brand:", brand.id, brand.name)
+    return {
+        "id": brand.id,
+        "name": brand.name,
+        "url": brand.url,
+        "category": brand.category,
+        "location": brand.location,
+        "workspace_id": brand.workspace_id,
+    }
+
 
 @app.post("/brands/{brand_id}/competitors")
 async def add_competitor(brand_id: int, comp_data: CompetitorCreate, db=Depends(get_db)):
+    print("add_competitor called")
+    print("brand_id:", brand_id)
+    print("comp_data:", comp_data)
+
     brand = db.query(Brand).get(brand_id)
     if not brand:
+        print("Brand not found for brand_id:", brand_id)
         raise HTTPException(status_code=404, detail="Brand not found")
+
     comp = Competitor(name=comp_data.name, url=comp_data.url, brand_id=brand_id)
     db.add(comp)
     db.commit()
     db.refresh(comp)
-    return comp
+
+    print("Created competitor:", comp.id, comp.name)
+    return {
+        "id": comp.id,
+        "name": comp.name,
+        "url": comp.url,
+        "brand_id": comp.brand_id,
+    }
 
 @app.post("/runs/{brand_id}")
 async def trigger_visibility_run(brand_id: int, run_data: RunCreate, db=Depends(get_db)):
+    print("trigger_visibility_run called")
+    print("brand_id:", brand_id)
+    print("run_data:", run_data)
+
     brand = db.query(Brand).get(brand_id)
     if not brand:
+        print("Brand not found for brand_id:", brand_id)
         raise HTTPException(status_code=404, detail="Brand not found")
 
     run = run_visibility_check(db, brand, brand.competitors)
+    print("Run created:", run.id, run.score)
+
     return {"run_id": run.id, "score": run.score}
+
 
 @app.get("/dashboard/{brand_id}", response_model=DashboardResponse)
 async def get_dashboard(brand_id: int, db=Depends(get_db)):
+    print("get_dashboard called")
+    print("brand_id:", brand_id)
+
     brand = db.query(Brand).get(brand_id)
     if not brand:
+        print("Brand not found for brand_id:", brand_id)
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    runs = db.query(VisibilityRun).filter(VisibilityRun.brand_id == brand_id).order_by(VisibilityRun.run_at).all()
-    trend = [{"run_at": r.run_at.isoformat(), "score": r.score} for r in runs]
+    runs = (
+        db.query(VisibilityRun)
+        .filter(VisibilityRun.brand_id == brand_id)
+        .order_by(VisibilityRun.run_at.asc())
+        .all()
+    )
 
-    # mentions by prompt
+    print("runs found:", len(runs))
+
+    trend = []
+    for r in runs:
+        trend.append({
+            "run_at": r.run_at.isoformat() if r.run_at else "",
+            "score": float(r.score) if r.score is not None else 0.0,
+        })
+
     mentions_by_prompt = {}
     for run in runs:
+        print("processing run:", run.id)
         for res in run.mention_results:
-            key = res.prompt_id
+            key = res.prompt_id or "unknown"
             if key not in mentions_by_prompt:
                 mentions_by_prompt[key] = 0
             if res.brand_mentioned:
                 mentions_by_prompt[key] += 1
 
-    # checklist
-    checklist = [
-        {
+    checklist = []
+    for item in brand.checklist_items:
+        checklist.append({
             "type": item.type,
             "impact": item.impact,
             "description": item.description,
-            "status": item.status
-        }
-        for item in brand.checklist_items
-    ]
+            "status": item.status,
+        })
 
-    return DashboardResponse(
-        score=runs[-1].score if runs else 0,
-        trend=trend,
-        mentions_by_prompt=mentions_by_prompt,
-        checklist=checklist
-    )
+    response = {
+        "score": float(runs[-1].score) if runs else 0.0,
+        "trend": trend,
+        "mentions_by_prompt": mentions_by_prompt,
+        "checklist": checklist,
+    }
+
+    print("dashboard response:", response)
+    return response
