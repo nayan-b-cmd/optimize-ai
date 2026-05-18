@@ -14,4 +14,4 @@ In development — architecture complete, MVP in progress.
 - Connects score improvements to GA4 traffic and conversions
 
 ## Stack
-Next.js · Node.js · PostgreSQL · Redis · OpenAI API · Stripe · GA4
+Python · Next.js · PostgreSQL · OpenAI API · Stripe
