@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 *.db
 .DS_Store
+
+/generated/prisma
+.env

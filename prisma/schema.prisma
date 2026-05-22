@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Brand {
+  id          String          @id @default(cuid())
+  name        String
+  website     String?
+  category    String?
+  location    String?
+  brandSlug   String          @unique
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  competitors Competitor[]
+  runs        VisibilityRun[]
+}
+
+model Competitor {
+  id        String   @id @default(cuid())
+  brandId   String
+  name      String
+  website   String?
+  score     Int?
+  createdAt DateTime @default(now())
+
+  brand     Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+}
+
+model VisibilityRun {
+  id            String          @id @default(cuid())
+  brandId       String
+  score         Int
+  delta         Int
+  mentionRate   Int
+  avgPosition   Float
+  queryCoverage Int
+  createdAt     DateTime        @default(now())
+
+  brand         Brand           @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  checklistItems ChecklistItem[]
+  evidenceRows   EvidenceRow[]
+}
+
+model ChecklistItem {
+  id              String         @id @default(cuid())
+  visibilityRunId  String
+  impact           String
+  text             String
+  estLift          String
+  createdAt        DateTime       @default(now())
+
+  visibilityRun    VisibilityRun  @relation(fields: [visibilityRunId], references: [id], onDelete: Cascade)
+}
+
+model EvidenceRow {
+  id              String          @id @default(cuid())
+  visibilityRunId  String
+  prompt          String
+  createdAt       DateTime        @default(now())
+
+  visibilityRun   VisibilityRun   @relation(fields: [visibilityRunId], references: [id], onDelete: Cascade)
+  results         EvidenceResult[]
+}
+
+model EvidenceResult {
+  id            String       @id @default(cuid())
+  evidenceRowId String
+  rank          String
+  brandName     String
+  llm           String
+  createdAt     DateTime     @default(now())
+
+  evidenceRow   EvidenceRow  @relation(fields: [evidenceRowId], references: [id], onDelete: Cascade)
+}
